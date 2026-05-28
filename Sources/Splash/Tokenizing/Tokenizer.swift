@@ -60,64 +60,69 @@ private extension Tokenizer {
         }
 
         mutating func next() -> Segment? {
-            let nextIndex = makeNextIndex()
+            // 原实现用尾递归(每消费一个同类字符就 return next()),遇到超长连续 run
+            // (长 token / base64 / 压缩单行 / 长空白)会递归到栈溢出崩溃。Swift 不保证
+            // 尾调用优化,这里改写成等价循环,递归深度恒为 1。
+            while true {
+                let nextIndex = makeNextIndex()
 
-            guard nextIndex != code.endIndex else {
-                let segment = segments.current
-                segments.current = nil
-                return segment
-            }
-
-            index = nextIndex
-            let component = makeComponent(at: nextIndex)
-
-            switch component.kind {
-            case .token, .delimiter:
-                guard var segment = segments.current else {
-                    segments.current = makeSegment(with: component, at: nextIndex)
-                    return next()
+                guard nextIndex != code.endIndex else {
+                    let segment = segments.current
+                    segments.current = nil
+                    return segment
                 }
 
-                guard segment.trailingWhitespace == nil,
-                      component.isDelimiter == segment.currentTokenIsDelimiter else {
-                    return finish(segment, with: component, at: nextIndex)
-                }
+                index = nextIndex
+                let component = makeComponent(at: nextIndex)
 
-                if component.isDelimiter {
-                    let previousCharacter = segment.tokens.current.last!
-                    let shouldMerge = grammar.isDelimiter(previousCharacter,
-                                                          mergableWith: component.character)
+                switch component.kind {
+                case .token, .delimiter:
+                    guard var segment = segments.current else {
+                        segments.current = makeSegment(with: component, at: nextIndex)
+                        continue
+                    }
 
-                    guard shouldMerge else {
+                    guard segment.trailingWhitespace == nil,
+                          component.isDelimiter == segment.currentTokenIsDelimiter else {
                         return finish(segment, with: component, at: nextIndex)
                     }
-                }
 
-                segment.tokens.current.append(component.character)
-                segments.current = segment
-                return next()
-            case .whitespace, .newline:
-                guard var segment = segments.current else {
-                    var segment = makeSegment(with: component, at: nextIndex)
-                    segment.trailingWhitespace = component.token
-                    segment.isLastOnLine = component.isNewline
+                    if component.isDelimiter {
+                        let previousCharacter = segment.tokens.current.last!
+                        let shouldMerge = grammar.isDelimiter(previousCharacter,
+                                                              mergableWith: component.character)
+
+                        guard shouldMerge else {
+                            return finish(segment, with: component, at: nextIndex)
+                        }
+                    }
+
+                    segment.tokens.current.append(component.character)
                     segments.current = segment
-                    return next()
-                }
+                    continue
+                case .whitespace, .newline:
+                    guard var segment = segments.current else {
+                        var segment = makeSegment(with: component, at: nextIndex)
+                        segment.trailingWhitespace = component.token
+                        segment.isLastOnLine = component.isNewline
+                        segments.current = segment
+                        continue
+                    }
 
-                if var existingWhitespace = segment.trailingWhitespace {
-                    existingWhitespace.append(component.character)
-                    segment.trailingWhitespace = existingWhitespace
-                } else {
-                    segment.trailingWhitespace = component.token
-                }
+                    if var existingWhitespace = segment.trailingWhitespace {
+                        existingWhitespace.append(component.character)
+                        segment.trailingWhitespace = existingWhitespace
+                    } else {
+                        segment.trailingWhitespace = component.token
+                    }
 
-                if component.isNewline {
-                    segment.isLastOnLine = true
-                }
+                    if component.isNewline {
+                        segment.isLastOnLine = true
+                    }
 
-                segments.current = segment
-                return next()
+                    segments.current = segment
+                    continue
+                }
             }
         }
 
